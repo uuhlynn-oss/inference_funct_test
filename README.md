@@ -1,11 +1,14 @@
 # Real-time Inference Pipeline
 
 Azure 기반 실시간 대중교통 혼잡도 예측 시스템의 **ML 추론 파이프라인**입니다.
+
 Stream Analytics에서 전달된 실시간 집계 데이터를 입력으로 받아 Feature Engineering을 수행하고, Azure Machine Learning Endpoint를 통해 혼잡도를 예측한 후 PostgreSQL에 결과를 저장합니다.
 
+---
 
 ## Architecture
 
+```text
                     Real-time Data Pipeline
                             │
                             ▼
@@ -38,6 +41,9 @@ Stream Analytics에서 전달된 실시간 집계 데이터를 입력으로 받�
                   │    PostgreSQL     │
                   │ prediction_result │
                   └───────────────────┘
+```
+
+---
 
 ## Role
 
@@ -52,9 +58,11 @@ Stream Analytics에서 전달된 실시간 집계 데이터를 입력으로 받�
 * Prediction Result 처리
 * PostgreSQL 저장
 
+---
 
 ## Processing Flow
 
+```text
 Stream Analytics
       │
       ▼
@@ -83,7 +91,9 @@ Aggregated Data
 │ PostgreSQL          │
 │ prediction_result   │
 └─────────────────────┘
+```
 
+---
 
 ## Key Technical Decision
 
@@ -300,4 +310,3 @@ Stream Analytics
             ↓
        PostgreSQL
 ```
-
