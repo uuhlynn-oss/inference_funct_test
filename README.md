@@ -2,108 +2,214 @@
 
 Azure 기반 실시간 대중교통 혼잡도 예측 시스템의 **ML 추론 파이프라인**입니다.
 
-Stream Analytics에서 전달된 실시간 집계 데이터를 입력으로 받아 Feature Engineering을 수행하고, Azure Machine Learning Endpoint를 통해 혼잡도를 예측한 후 PostgreSQL에 결과를 저장합니다.
+Stream Analytics에서 5분 단위로 집계된 실시간 대중교통 데이터를 입력으로 받아 추론에 필요한 Feature를 구성하고, Azure Machine Learning Endpoint를 호출하여 예측 결과를 PostgreSQL에 저장합니다.
 
 ---
 
 ## Architecture
 
-```text
-                    Real-time Data Pipeline
-                            │
-                            ▼
-                  ┌───────────────────┐
-                  │ Stream Analytics  │
-                  │                   │
-                  │ 5-min Aggregation │
-                  └─────────┬─────────┘
-                            │
-                            │ Aggregated Features
-                            ▼
-                  ┌───────────────────┐
-                  │ Inference Function│
-                  │                   │
-                  │ Input Validation  │
-                  │ Feature Engineering│
-                  └─────────┬─────────┘
-                            │
-                            │ Feature Vector
-                            ▼
-                  ┌───────────────────┐
-                  │ Azure ML Endpoint │
-                  │                   │
-                  │   ML Inference    │
-                  └─────────┬─────────┘
-                            │
-                            │ Prediction
-                            ▼
-                  ┌───────────────────┐
-                  │    PostgreSQL     │
-                  │ prediction_result │
-                  └───────────────────┘
+```text id="9v7m0q"
+                 Real-time Data Pipeline
+                         │
+                         ▼
+                ┌─────────────────┐
+                │   Event Hub     │
+                │ Real-time Data  │
+                └────────┬────────┘
+                         │
+                         ▼
+                ┌─────────────────┐
+                │ Stream Analytics │
+                │                 │
+                │ Event-time      │
+                │ 5-min Window    │
+                │ Aggregation     │
+                └────────┬────────┘
+                         │
+                         │ Aggregated Features
+                         ▼
+                ┌─────────────────────┐
+                │  Inference Function │
+                │                     │
+                │ Input Validation    │
+                │ Feature Engineering │
+                └─────────┬───────────┘
+                          │
+                          │ Model Input
+                          ▼
+                ┌─────────────────────┐
+                │ Azure ML Endpoint   │
+                │                     │
+                │   ML Inference      │
+                └─────────┬───────────┘
+                          │
+                          │ Prediction
+                          ▼
+                ┌─────────────────────┐
+                │    PostgreSQL       │
+                │ prediction_result   │
+                └─────────────────────┘
 ```
 
 ---
 
 ## Role
 
-본 Repository는 실시간 데이터 파이프라인에서 **ML 추론 직전부터 예측 결과 저장까지**를 담당합니다.
+본 Repository는 전체 실시간 데이터 파이프라인에서 **ML 추론 직전부터 예측 결과 저장까지**를 담당합니다.
 
 ### 주요 책임
 
-* Stream Analytics 집계 결과 수신
-* Input Validation
+* Stream Analytics 집계 데이터 수신
+* 입력 데이터 검증
 * ML Feature Engineering
-* Azure ML Endpoint 호출
+* Azure Machine Learning Endpoint 호출
 * Prediction Result 처리
 * PostgreSQL 저장
 
 ---
 
-## Processing Flow
+## End-to-End Flow
 
-```text
+```text id="4r3w4n"
+External Data
+      │
+      ▼
+Data Collection
+      │
+      ▼
+Event Hub
+      │
+      ▼
 Stream Analytics
       │
+      │ 5-minute Aggregation
       ▼
-Aggregated Data
+Inference Function
+      │
+      ├── Input Validation
+      ├── Feature Engineering
       │
       ▼
-┌─────────────────────┐
-│ Input Validation    │
-└─────────┬───────────┘
-          ▼
-┌─────────────────────┐
-│ Feature Engineering │
-└─────────┬───────────┘
-          ▼
-┌─────────────────────┐
-│ Azure ML Endpoint   │
-│      Inference      │
-└─────────┬───────────┘
-          ▼
-┌─────────────────────┐
-│ Prediction Result   │
-│ Validation          │
-└─────────┬───────────┘
-          ▼
-┌─────────────────────┐
-│ PostgreSQL          │
-│ prediction_result   │
-└─────────────────────┘
+Azure ML Endpoint
+      │
+      │ Prediction
+      ▼
+PostgreSQL
+      │
+      ▼
+prediction_result
 ```
 
 ---
 
-## Key Technical Decision
+# Stream Analytics Processing
 
-### Feature Engineering을 Inference Function에 통합
+Stream Analytics에서는 실시간 BUS/SUBWAY 데이터를 **event time 기준 5분 Tumbling Window**로 집계합니다.
 
-실시간 추론 과정에서 별도의 Feature Engineering 서비스를 추가하지 않고, **Inference Function에서 추론 직전에 필요한 Feature를 생성**하도록 설계했습니다.
+### 주요 처리
 
-```text
-기존 고려 구조
+* `event_time` 기반 Event-time Processing
+* BUS / SUBWAY 데이터 필터링
+* `boarding`, `alighting` 데이터 품질 검증
+* 5분 Tumbling Window 집계
+* 위치 및 데이터 유형별 집계 결과 생성
 
+### Aggregation
+
+```text id="ndj57f"
+5-minute Tumbling Window
+          │
+          ├── sample_count
+          ├── traffic_sum_5m
+          ├── boarding_sum_5m
+          └── alighting_sum_5m
+```
+
+실제 Stream Analytics Query에서는 `TIMESTAMP BY event_time`을 사용하여 수집 시각이 아닌 **이벤트 발생 시각을 기준으로 Window를 구성**합니다.
+
+또한 `TRY_CAST`를 활용하여 승차 및 하차 데이터가 유효한 경우만 집계하도록 구성했습니다.
+
+예시:
+
+```sql id="y9j2b8"
+SELECT
+    source_id,
+    location_id,
+    data_type,
+    DATEADD(minute, -5, System.Timestamp()) AS window_start,
+    System.Timestamp() AS window_end,
+    CAST(COUNT(*) AS bigint) AS sample_count,
+
+    CAST(
+        SUM(
+            TRY_CAST(boarding AS bigint)
+            + TRY_CAST(alighting AS bigint)
+        ) AS bigint
+    ) AS traffic_sum_5m,
+
+    CAST(
+        SUM(TRY_CAST(boarding AS bigint))
+        AS bigint
+    ) AS boarding_sum_5m,
+
+    CAST(
+        SUM(TRY_CAST(alighting AS bigint))
+        AS bigint
+    ) AS alighting_sum_5m
+
+INTO [observation-5m-postgres]
+
+FROM [eh_raw]
+
+TIMESTAMP BY event_time
+
+WHERE
+    data_type IN ('BUS', 'SUBWAY')
+    AND TRY_CAST(boarding AS bigint) IS NOT NULL
+    AND TRY_CAST(alighting AS bigint) IS NOT NULL
+
+GROUP BY
+    source_id,
+    location_id,
+    data_type,
+    TumblingWindow(minute, 5);
+```
+
+---
+
+# Inference Function
+
+Stream Analytics에서 생성된 집계 데이터를 기반으로 ML 추론에 필요한 입력 Feature를 구성합니다.
+
+```text id="8ep6cq"
+Aggregated Data
+      │
+      ▼
+Input Validation
+      │
+      ▼
+Feature Engineering
+      │
+      ▼
+Model Input
+      │
+      ▼
+Azure ML Endpoint
+```
+
+Inference Function은 모델 자체를 실행하는 것이 아니라 **실시간 데이터와 ML 모델 사이의 추론 오케스트레이션 역할**을 담당합니다.
+
+---
+
+# Key Technical Decision
+
+## Feature Engineering을 Inference Function에 통합
+
+실시간 추론을 위해 별도의 Feature Engineering 서비스를 추가하는 대신, **Inference Function에서 ML 호출 직전에 필요한 Feature를 생성**하도록 설계했습니다.
+
+### 고려했던 구조
+
+```text id="e1t0yc"
 Stream Analytics
        ↓
 Feature Engineering Service
@@ -113,9 +219,9 @@ Inference Function
 Azure ML
 ```
 
-```text
-최종 구조
+### 최종 구조
 
+```text id="9u0z8k"
 Stream Analytics
        ↓
 Inference Function
@@ -127,146 +233,110 @@ Inference Function
         Azure ML Endpoint
 ```
 
-이를 통해:
+### 설계 목적
 
 * 추론 경로 단순화
-* 서비스 간 연동 단계 감소
-* 전처리와 추론 요청의 일관성 확보
-* 추가 인프라 운영 복잡도 감소
-
-를 달성했습니다.
+* 별도 전처리 서비스 운영 복잡도 감소
+* Feature 생성과 추론 요청의 일관성 확보
+* ML Endpoint 연동 단계 최소화
 
 ---
 
-## Input
+# Prediction Result
 
-Stream Analytics에서 5분 단위로 집계된 실시간 Feature를 입력으로 사용합니다.
+Azure ML Endpoint에서 반환된 예측 결과는 PostgreSQL의 `prediction_result` 테이블에 저장합니다.
 
-예시:
-
-```json
-{
-  "source_id": "SRC_OA21285_CITYDATA",
-  "location_id": "JAMSIL",
-  "window_start": "2026-08-08T13:00:00Z",
-  "window_end": "2026-08-08T13:05:00Z",
-  "features": {
-    "subway_current": 0.72,
-    "subway_1h": 0.64,
-    "subway_2h": 0.58,
-    "bus_current": 0.51,
-    "bus_1h": 0.47,
-    "bus_2h": 0.43
-  }
-}
-```
-
-실제 Feature 구성은 학습된 ML 모델의 입력 스키마에 맞춰 처리합니다.
-
----
-
-## ML Inference
-
-Feature Engineering이 완료된 데이터는 Azure Machine Learning Endpoint로 전달됩니다.
-
-```text
-Aggregated Features
-        ↓
-Feature Engineering
-        ↓
-Model Input
-        ↓
+```text id="4qv9uy"
 Azure ML Endpoint
-        ↓
-Prediction
+       │
+       ▼
+Prediction Result
+       │
+       ▼
+PostgreSQL
+       │
+       ▼
+prediction_result
 ```
 
-Inference Function은 모델 자체를 실행하는 역할이 아니라 **실시간 데이터와 ML Endpoint 사이의 추론 오케스트레이션 역할**을 담당합니다.
+예측 결과는 이후 대시보드 및 의사결정 지원 시스템에서 조회할 수 있도록 관리합니다.
 
----
+### 주요 데이터
 
-## Prediction Result
-
-ML Endpoint에서 반환된 예측 결과는 PostgreSQL의 `prediction_result` 테이블에 저장합니다.
-
-예시 구조:
-
-| Column               | Description |
+| Field                | Description |
 | -------------------- | ----------- |
 | `location_id`        | 예측 대상 위치    |
 | `prediction_time`    | 예측 기준 시각    |
 | `prediction_horizon` | 예측 시점       |
-| `prediction_value`   | 예측 결과       |
+| `prediction_value`   | 모델 예측 결과    |
 | `created_at`         | 결과 생성 시각    |
 
-이를 통해 이후 Dashboard 및 의사결정 지원 시스템에서 예측 결과를 조회할 수 있습니다.
+---
+
+# Tech Stack
+
+| Technology                    | Role                                      |
+| ----------------------------- | ----------------------------------------- |
+| Python                        | Application / Data Processing             |
+| Azure Functions               | Inference Orchestration                   |
+| Azure Stream Analytics        | Event-time Processing & 5-min Aggregation |
+| Azure Machine Learning        | ML Model Inference                        |
+| Azure Database for PostgreSQL | Prediction Result Storage                 |
 
 ---
 
-## Tech Stack
+# Project Structure
 
-| Technology                    | Role                               |
-| ----------------------------- | ---------------------------------- |
-| Python                        | Application / Data Processing      |
-| Azure Functions               | Serverless Inference Orchestration |
-| Azure Stream Analytics        | Real-time Aggregation              |
-| Azure Machine Learning        | ML Model Inference                 |
-| Azure Database for PostgreSQL | Prediction Result Storage          |
-
----
-
-## Project Structure
-
-```text
+```text id="a3n0ds"
 .
 ├── function_app.py       # Inference Function
-├── host.json             # Azure Functions Host 설정
+├── host.json             # Azure Functions Host configuration
 ├── requirements.txt      # Python dependencies
-├── .funcignore           # Azure Functions 배포 제외 파일
-└── .gitignore            # Git 제외 파일
+├── .funcignore           # Azure Functions deployment exclusions
+└── .gitignore            # Git exclusions
 ```
 
 ---
 
-## Local Development
+# Local Development
 
-### 1. Virtual Environment
+## 1. Create Virtual Environment
 
-```bash
+```bash id="1k2t7a"
 python -m venv .venv
 ```
 
 Windows:
 
-```bash
+```bash id="7k8f4d"
 .venv\Scripts\activate
 ```
 
-### 2. Install Dependencies
+## 2. Install Dependencies
 
-```bash
+```bash id="v5g3z2"
 pip install -r requirements.txt
 ```
 
-### 3. Configure Environment
+## 3. Configure Environment
 
-Azure 리소스 연결 정보와 Secret은 `local.settings.json` 또는 환경변수로 관리합니다.
+Azure resource connection information and secrets should be configured through `local.settings.json` or environment variables.
 
-`local.settings.json`은 보안상 Git Repository에 포함하지 않습니다.
+`local.settings.json` is excluded from Git to prevent credentials and connection information from being committed.
 
-### 4. Run Azure Function
+## 4. Run Azure Function
 
-```bash
+```bash id="f7q1xm"
 func start
 ```
 
 ---
 
-## E2E Validation
+# E2E Validation
 
-Mock 기반으로 다음 추론 경로를 검증했습니다.
+Mock 기반으로 다음 전체 추론 경로를 검증했습니다.
 
-```text
+```text id="z1x7cw"
 Stream Analytics
        ↓
 Inference Function
@@ -278,35 +348,37 @@ Azure ML Inference
 PostgreSQL
 ```
 
-### Validation Result
+### Validation
 
-* Input → Inference → DB 저장 흐름 검증
+* Stream Analytics 집계 데이터 전달 검증
+* Inference Function 입력 처리 검증
+* Feature Engineering 검증
+* ML Inference 요청/응답 흐름 검증
 * Prediction Result PostgreSQL 적재 확인
-* 실시간 추론 경로 E2E 검증 완료
 
-> 실제 Azure ML Endpoint 배포 후 Production Endpoint 기준의 최종 검증을 진행합니다.
+현재 Mock 기반 E2E 검증을 완료했으며, 실제 Azure ML Endpoint 배포 후 Production 환경에서 최종 검증을 진행합니다.
 
 ---
 
-## Related Pipeline
+# Related Repository
 
-본 Repository는 전체 실시간 데이터 파이프라인의 **Inference 단계**를 담당합니다.
+본 Repository는 전체 실시간 데이터 파이프라인 중 **Inference 단계**를 담당합니다.
 
-```text
-External Data
-      ↓
-Data Collection
-      ↓
-Event Hub
-      ↓
-Stream Analytics
-      ↓
-┌───────────────────────┐
-│  This Repository      │
-│  Real-time Inference  │
-└───────────┬───────────┘
+```text id="p0w3mz"
+[Data Collection]
+       ↓
+[Event Hub]
+       ↓
+[Stream Analytics]
+       ↓
+┌────────────────────────┐
+│  Real-time Inference   │
+│     This Repository    │
+└───────────┬────────────┘
             ↓
-       Azure ML
+       [Azure ML]
             ↓
-       PostgreSQL
+       [PostgreSQL]
 ```
+
+전체 데이터 수집 및 Streaming Pipeline은 별도의 Repository에서 관리합니다.
