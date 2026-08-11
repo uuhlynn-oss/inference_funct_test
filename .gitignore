@@ -5,8 +5,31 @@ __pycache__/
 
 # C extensions
 *.so
+# Azure Functions
+.azure/
+local.settings.json
 
-# Distribution / packaging
+# Python virtual environment
+.venv/
+venv/
+
+# Environment variables
+.env
+.env.*
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# OS files
+.DS_Store
+Thumbs.db# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -216,3 +239,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.python_packages
